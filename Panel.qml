@@ -8,6 +8,7 @@ import "Model.js" as Model
 import "Store.js" as Store
 import "Search.js" as Search
 import "Selection.js" as Selection
+import "Portfolio.js" as Portfolio
 
 // Stocks app: a two-pane popup. The sidebar owns search + watchlists, the
 // detail pane shows the selected ticker. This file also owns the quote state
@@ -35,6 +36,7 @@ Panel {
   readonly property string selectedSymbol: String(store.selectedSymbol || "")
   readonly property string activeRange: Store.normalizeRange(store.chartRange)
   readonly property string displayCurrency: Store.normalizeCurrency(store.currency)
+  readonly property var holdings: store.holdings || ({})
 
   // ---- Quotes, chart and FX ----------------------------------------------
   property var quotes: []
@@ -49,11 +51,12 @@ Panel {
   property var rates: ({})
   property var ratesRequested: []
   property int ratesRetries: 0
+  property bool ratesPending: false
   property string fetchError: ""
   property double lastUpdated: 0
   property int retries: 0
 
-  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.2"
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.3.0"
   readonly property bool loading: quotes.length === 0 && fetchError === ""
   readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
 
@@ -70,6 +73,67 @@ Panel {
     ? root.selectedQuote
     : Model.emptyQuote(root.selectedSymbol)
   readonly property var detailSeries: root.seriesFor(root.selectedQuote)
+
+  // ---- Portfolio ----------------------------------------------------------
+  // Totals use the raw native-currency quotes so Portfolio.js can pick one
+  // currency (the display currency, or the one most of the value is in).
+  readonly property var portfolio: Portfolio.summary(root.symbols, root.holdings, root.quotes, root.displayCurrency, root.rates)
+  readonly property string portfolioRateKey: Portfolio.ratePairs(root.symbols, root.holdings, root.quotes, root.portfolio.currency).join(",")
+  readonly property real selectedHolding: Store.holdingFor(root.store, root.selectedSymbol)
+  readonly property var selectedPosition: root.positionFor(root.selectedSymbol)
+  property string holdingEditSymbol: ""
+  property string holdingError: ""
+
+  // Value of one holding in its own (major) currency, or the display currency.
+  function positionFor(symbol) {
+    if (symbol === "" || Store.holdingFor(root.store, symbol) <= 0) return null
+    var single = Portfolio.summary([symbol], root.holdings, root.quotes, root.displayCurrency, root.rates)
+    return single.count ? single : null
+  }
+
+  function positionLabel(symbol) {
+    var amount = Store.holdingFor(root.store, symbol)
+    if (amount <= 0) return symbol
+    var pos = root.positionFor(symbol)
+    var label = symbol + " · " + Portfolio.formatAmount(amount) + " sh"
+    if (pos && pos.value !== null) label += " · " + Portfolio.formatMoney(pos.value, pos.currency)
+    return label
+  }
+
+  function beginHoldingEdit() {
+    root.holdingEditSymbol = root.selectedSymbol
+    root.holdingError = ""
+  }
+
+  function commitHolding(text) {
+    var symbol = root.holdingEditSymbol || root.selectedSymbol
+    root.holdingEditSymbol = ""
+    if (symbol === "") return
+    var amount = Portfolio.parseAmount(text)
+    if (amount === null) {
+      root.holdingError = "Enter a number, e.g. 12 or 2.5"
+      root.syncHoldingField(true)
+      return
+    }
+    root.holdingError = ""
+    root.commit(Store.setHolding(root.store, symbol, amount))
+    root.syncHoldingField(true)
+  }
+
+  function cancelHoldingEdit() {
+    root.holdingEditSymbol = ""
+    root.holdingError = ""
+    root.syncHoldingField(true)
+    keyCatcher.forceActiveFocus()
+  }
+
+  function syncHoldingField(force) {
+    if (!force && holdingField.activeFocus) return
+    holdingField.text = Portfolio.editableAmount(Store.holdingFor(root.store, root.selectedSymbol))
+  }
+
+  onStoreChanged: root.syncHoldingField(false)
+  onPortfolioRateKeyChanged: root.ensureRates()
 
   // Sidebar rows exist as soon as a symbol is added; quotes fill in after.
   readonly property var listRows: {
@@ -363,6 +427,14 @@ Panel {
 
   function ensureRates() {
     var pairs = Model.ratePairs(root.quotes, root.displayCurrency)
+    if (ratesProc.running) {
+      root.ratesPending = true
+      return
+    }
+    var held = Portfolio.ratePairs(root.symbols, root.holdings, root.quotes, root.portfolio.currency)
+    for (var h = 0; h < held.length; h++) {
+      if (pairs.indexOf(held[h]) === -1 && root.rates[held[h]] === undefined) pairs.push(held[h])
+    }
     if (!pairs.length || ratesProc.running) return
     root.ratesRequested = pairs
     ratesProc.command = Model.curlCommand(pairs, root.userAgent, "1d")
@@ -508,6 +580,8 @@ Panel {
   }
 
   onSelectedSymbolChanged: {
+    root.holdingError = ""
+    root.syncHoldingField(true)
     root.chartSeries = {}
     root.chartSeriesEnd = 0
     root.chartSeriesRange = ""
@@ -569,6 +643,12 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.handleRatesOutput(text)
+    }
+    onExited: {
+      if (root.ratesPending) {
+        root.ratesPending = false
+        Qt.callLater(root.ensureRates)
+      }
     }
   }
 
@@ -751,7 +831,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: searchField.activeFocus || nameField.activeFocus
+      blocked: searchField.activeFocus || nameField.activeFocus || holdingField.activeFocus
       onCloseRequested: root.close()
       onReturnRequested: root.refresh()
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -772,6 +852,7 @@ Panel {
           }
         }
         else if (text === "c") root.selectCurrency(1)
+        else if (text === "s" && root.selectedSymbol !== "") holdingField.forceActiveFocus()
         else if (text === "[") root.cycleWatchlist(-1)
         else if (text === "]") root.cycleWatchlist(1)
         else if (text === ",") root.cycleRange(-1)
@@ -973,6 +1054,89 @@ Panel {
                   }
                 }
 
+                // Portfolio value of the holdings in this watchlist.
+                Rectangle {
+                  id: portfolioCard
+                  visible: root.portfolio.count > 0
+                  width: parent.width
+                  height: portfolioInner.implicitHeight + Style.space(12)
+                  radius: Style.cornerRadius
+                  color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.06)
+
+                  Column {
+                    id: portfolioInner
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(8)
+                    anchors.rightMargin: Style.space(8)
+                    spacing: Style.space(2)
+
+                    Item {
+                      width: parent.width
+                      height: portfolioValue.implicitHeight
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Portfolio"
+                        color: root.mutedForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: portfolioValue
+                        anchors.right: parent.right
+                        text: root.portfolio.value !== null
+                          ? Portfolio.formatMoney(root.portfolio.value, root.portfolio.currency)
+                          : "…"
+                        color: root.barForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.subtitle
+                        font.bold: true
+                      }
+                    }
+
+                    Item {
+                      width: parent.width
+                      height: portfolioChange.implicitHeight
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.left: parent.left
+                        anchors.right: portfolioChange.left
+                        anchors.rightMargin: Style.space(6)
+                        text: root.portfolio.missing > 0
+                          ? root.portfolio.missing + " of " + root.portfolio.count + " not priced yet"
+                          : root.portfolio.count + (root.portfolio.count === 1 ? " position" : " positions")
+                        elide: Text.ElideRight
+                        color: root.mutedForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: portfolioChange
+                        anchors.right: parent.right
+                        text: root.portfolio.dayChange !== null
+                          ? Portfolio.formatSignedMoney(root.portfolio.dayChange, "")
+                            + (root.portfolio.dayChangePct !== null
+                                ? " (" + Model.formatSignedPercent2(root.portfolio.dayChangePct) + ")" : "")
+                            + " today"
+                          : ""
+                        color: root.signedColor(root.portfolio.dayChange)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+                    }
+                  }
+                }
+
                 PanelSeparator {
                   visible: !root.addingWatchlist && !root.renamingWatchlist
                   foreground: root.barForeground
@@ -1050,7 +1214,7 @@ Panel {
                         anchors.right: tickerName.right
                         anchors.top: tickerName.bottom
                         anchors.topMargin: 1
-                        text: tickerRow.modelData.symbol
+                        text: root.positionLabel(tickerRow.modelData.symbol)
                         elide: Text.ElideRight
                         color: root.mutedForeground
                         font.family: root.fontFamily
@@ -1626,6 +1790,90 @@ Panel {
                     color: root.mutedForeground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
+                  }
+                }
+
+                PanelSeparator { foreground: root.barForeground }
+
+                // Holding: shares owned, editable, and what they are worth now.
+                Item {
+                  id: holdingRow
+                  width: parent.width
+                  height: Math.max(holdingField.height, holdingValues.implicitHeight)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: holdingLabel
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Shares owned"
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  TextField {
+                    id: holdingField
+                    anchors.left: holdingLabel.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(120)
+                    height: Style.spacing.controlHeight
+                    placeholderText: "0"
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                    maximumLength: 24
+                    foreground: root.barForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    onActiveFocusChanged: if (activeFocus) root.beginHoldingEdit()
+                    onEditingFinished: if (root.holdingEditSymbol !== "") root.commitHolding(text)
+                    onAccepted: keyCatcher.forceActiveFocus()
+                    Keys.onEscapePressed: function(event) {
+                      root.cancelHoldingEdit()
+                      event.accepted = true
+                    }
+                  }
+
+                  Column {
+                    id: holdingValues
+                    anchors.left: holdingField.right
+                    anchors.leftMargin: Style.space(12)
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 0
+
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      horizontalAlignment: Text.AlignRight
+                      text: root.holdingError !== ""
+                        ? root.holdingError
+                        : (root.selectedPosition
+                            ? (root.selectedPosition.value !== null
+                                ? "Value " + Portfolio.formatMoney(root.selectedPosition.value, root.selectedPosition.currency)
+                                : "Value …")
+                            : "Type how many shares you own")
+                      elide: Text.ElideLeft
+                      color: root.holdingError !== "" ? root.urgentForeground
+                        : (root.selectedPosition ? root.barForeground : root.mutedForeground)
+                      font.family: root.fontFamily
+                      font.pixelSize: root.selectedPosition && root.holdingError === "" ? Style.font.body : Style.font.caption
+                      font.bold: root.selectedPosition !== null && root.holdingError === ""
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      horizontalAlignment: Text.AlignRight
+                      visible: root.holdingError === "" && root.selectedPosition !== null
+                        && root.selectedPosition.dayChange !== null
+                      text: visible
+                        ? Portfolio.formatSignedMoney(root.selectedPosition.dayChange, root.selectedPosition.currency) + " today"
+                        : ""
+                      color: root.selectedPosition ? root.signedColor(root.selectedPosition.dayChange) : root.mutedForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
                   }
                 }
 

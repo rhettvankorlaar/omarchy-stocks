@@ -48,6 +48,40 @@ function normalizeCurrency(value) {
   return /^[A-Z]{3}$/.test(code) ? code : ""
 }
 
+// Shares held per symbol, shared by every watchlist that lists the symbol.
+// Mirrors Portfolio.normalizeHoldings; kept here so Store.js stays standalone.
+var MAX_HOLDING = 1e12
+var MAX_HOLDINGS = 500
+
+function normalizeHolding(value) {
+  if (value === undefined || value === null || value === "") return 0
+  var n = Number(value)
+  if (!isFinite(n) || n < 0 || n > MAX_HOLDING) return 0
+  return Math.round(n * 1e8) / 1e8
+}
+
+function normalizeHoldings(input) {
+  var out = {}
+  if (!input || typeof input !== "object" || Array.isArray(input)) return out
+  var count = 0
+  for (var key in input) {
+    if (count >= MAX_HOLDINGS) break
+    var symbol = trimString(key).toUpperCase()
+    if (!/^[A-Z0-9.^=-]{1,20}$/.test(symbol)) continue
+    var amount = normalizeHolding(input[key])
+    if (amount <= 0) continue
+    out[symbol] = amount
+    count++
+  }
+  return out
+}
+
+function copyHoldings(holdings) {
+  var out = {}
+  for (var key in holdings || {}) out[key] = holdings[key]
+  return out
+}
+
 function emptyState(now, rand) {
   var listId = newId(now, rand)
   return {
@@ -56,7 +90,8 @@ function emptyState(now, rand) {
     activeWatchlist: listId,
     selectedSymbol: "",
     chartRange: "1d",
-    currency: ""
+    currency: "",
+    holdings: {}
   }
 }
 
@@ -72,7 +107,8 @@ function copyState(state) {
     activeWatchlist: state.activeWatchlist,
     selectedSymbol: state.selectedSymbol,
     chartRange: state.chartRange,
-    currency: state.currency
+    currency: state.currency,
+    holdings: copyHoldings(state.holdings)
   }
 }
 
@@ -131,7 +167,8 @@ function normalizeState(input, now, rand) {
     activeWatchlist: active,
     selectedSymbol: selected,
     chartRange: normalizeRange(input.chartRange),
-    currency: normalizeCurrency(input.currency)
+    currency: normalizeCurrency(input.currency),
+    holdings: normalizeHoldings(input.holdings)
   }
 }
 
@@ -201,6 +238,9 @@ function deleteWatchlist(state, id) {
   }
   next.watchlists = lists
   if (next.activeWatchlist === id) next.activeWatchlist = lists[0].id
+  for (var symbol in copyHoldings(next.holdings)) {
+    if (!symbolListed(next, symbol)) delete next.holdings[symbol]
+  }
   return ensureSelection(next)
 }
 
@@ -235,7 +275,36 @@ function removeSymbol(state, symbol) {
   if (index === -1) return state
   list.symbols.splice(index, 1)
   if (next.selectedSymbol === value) next.selectedSymbol = ""
+  if (!symbolListed(next, value)) delete next.holdings[value]
   return ensureSelection(next)
+}
+
+function symbolListed(state, symbol) {
+  for (var i = 0; i < state.watchlists.length; i++) {
+    if (state.watchlists[i].symbols.indexOf(symbol) !== -1) return true
+  }
+  return false
+}
+
+function holdingFor(state, symbol) {
+  var value = normalizeSymbols([symbol])[0]
+  if (!value || !state || !state.holdings) return 0
+  return normalizeHolding(state.holdings[value])
+}
+
+// amount <= 0 (or empty) clears the holding. Only listed symbols can be held.
+function setHolding(state, symbol, amount) {
+  var value = normalizeSymbols([symbol])[0]
+  if (!value || !symbolListed(state, value)) return state
+  var n = normalizeHolding(amount)
+  if (n === holdingFor(state, value)) return state
+  var holdings = state.holdings || {}
+  if (n <= 0 && holdings[value] === undefined) return state
+  if (n > 0 && holdings[value] === undefined && Object.keys(holdings).length >= MAX_HOLDINGS) return state
+  var next = copyState(state)
+  if (n > 0) next.holdings[value] = n
+  else delete next.holdings[value]
+  return next
 }
 
 function selectSymbol(state, symbol) {
@@ -293,6 +362,9 @@ if (typeof module !== "undefined") {
     removeSymbol: removeSymbol,
     selectSymbol: selectSymbol,
     setChartRange: setChartRange,
-    setCurrency: setCurrency
+    setCurrency: setCurrency,
+    normalizeHoldings: normalizeHoldings,
+    holdingFor: holdingFor,
+    setHolding: setHolding
   }
 }

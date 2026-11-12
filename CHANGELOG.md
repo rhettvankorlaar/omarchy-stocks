@@ -2,6 +2,13 @@
 
 All notable changes to this plugin are documented here.
 
+## [1.3.0] - 2026-11-12
+
+### Added
+
+- Portfolio tracking: enter how many shares you own of a ticker in the "Shares owned" field of the detail pane (or press `s`). The sidebar shows the watchlist's total portfolio value and today's change, and each row shows the holding and its value.
+- Mixed-currency holdings are converted into the display currency, or else into the currency most of the value is in (London pence handled).
+
 ## [1.2.2] - 2026-11-07
 
 ### Fixed

@@ -39,6 +39,13 @@ Then click the bar label to open the app.
 - The `×` on a ticker removes it, after which the next ticker is selected.
 - Range chips (1D/5D/1M/6M/1Y) and the currency chip are saved with the rest
   of the app state.
+- Type how many shares you own in **Shares owned** under the chart (or
+  press `s`); Enter saves, an empty value or `0` clears it. Decimals with a
+  dot or comma work. The sidebar then shows the watchlist's **Portfolio**
+  value and today's change, and each ticker row shows `10 sh · value`.
+  Holdings are per symbol, so the same ticker in two watchlists shares one
+  amount. Totals use the display currency, or the currency most of your
+  value is in when set to Native.
 - Clicking `Open on TradingView ↗` opens the selected symbol's TradingView page.
 
 Drag between two points on the detail chart to measure the price change and
@@ -50,7 +57,7 @@ to clear it. Changing ticker, range or currency clears the selection.
 Keyboard: `/` focuses search, `j`/`k` move the selection, `Delete` removes
 the selected ticker, `n` creates a watchlist, `r` renames it, `D` twice
 deletes it, `[`/`]` switch watchlists, `,`/`.` change the chart range, and
-`c` cycles the display currency. `Esc` clears search first, then closes the
+`c` cycles the display currency, and `s` edits the shares you own. `Esc` clears search first, then closes the
 panel.
 
 Useful commands:

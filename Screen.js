@@ -11,7 +11,7 @@ const path = require("node:path")
 
 const CONSTITUENTS_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
 const YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
-const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.2"
+const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.3.0"
 const DAY_MS = 24 * 60 * 60 * 1000
 const SESSION_5Y = 252 * 5
 
